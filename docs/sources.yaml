@@ -1,8 +1,11 @@
 # war-brief sources
 # Edit this file to add or remove sources. No code change needed.
+# Feeds are pulled every run; items older than rss_lookback_days (default 3) are dropped.
+
+rss_lookback_days: 3
 
 rss_feeds:
-  # Primes and key contractors
+  # ---- Primes and key contractors ----
   - name: Anduril
     url: https://www.anduril.com/feed/
     tags: [company, prime]
@@ -23,7 +26,7 @@ rss_feeds:
     url: https://www.aboutamazon.com/news/tag/project-kuiper.rss
     tags: [company, space]
 
-  # Trade press
+  # ---- Trade press ----
   - name: Breaking Defense
     url: https://breakingdefense.com/feed/
     tags: [press]
@@ -36,12 +39,26 @@ rss_feeds:
     url: https://warontherocks.com/feed/
     tags: [press, analysis]
 
-  # Analysts and writers (verify URLs; some may need updating)
+  - name: DefenseScoop
+    url: https://defensescoop.com/feed/
+    tags: [press]
+
+  # ---- Acquisition reform analysts ----
   - name: Acquisition Talk (Eric Lofgren)
     url: https://acquisitiontalk.com/feed/
     tags: [analyst, acquisition-reform]
 
-  # Site-wide feed; filter by author in fetch_rss.py
+  - name: Defense Tech and Acquisition (Pete Modigliani)
+    url: https://defenseacquisition.substack.com/feed
+    tags: [analyst, acquisition-reform]
+
+  # ---- Naval and maritime ----
+  - name: CDR Salamander
+    url: https://cdrsalamander.substack.com/feed
+    tags: [analyst, naval]
+
+  # ---- Think tanks ----
+  # AEI is site-wide; fetch_rss.py filters by author.
   - name: AEI (filtered)
     url: https://www.aei.org/rss
     tags: [analyst, think-tank]
@@ -52,9 +69,45 @@ rss_feeds:
       - Mackenzie Eaglen
       - Bill Greenwalt
 
-# SAM.gov queries
-# Each entry becomes a separate API call. NAICS = North American Industry
-# Classification System. PSC = Product or Service Code.
+  - name: Hoover Institution (filtered)
+    url: https://www.hoover.org/rss.xml
+    tags: [analyst, think-tank]
+    author_filter:
+      - Christian Brose
+      - Jacquelyn Schneider
+      - Niall Ferguson
+
+  - name: CSIS
+    url: https://www.csis.org/analysis/feed
+    tags: [analyst, think-tank]
+
+  - name: Special Competitive Studies Project (SCSP)
+    url: https://scsp222.substack.com/feed
+    tags: [analyst, think-tank, china]
+
+  - name: Vandenberg Coalition
+    url: https://vandenbergcoalition.org/feed/
+    tags: [analyst, think-tank]
+
+  # ---- Investor / founder commentary ----
+  - name: Trae Stephens (Medium)
+    url: https://medium.com/feed/@traestephens
+    tags: [investor, anduril]
+
+  - name: Noah Smith — Noahpinion
+    url: https://www.noahpinion.blog/feed
+    tags: [analyst, economics]
+
+  # ---- Cultural / philosophical voices ----
+  - name: Andy Crouch
+    url: https://ahcrouch.substack.com/feed
+    tags: [analyst, philosophy]
+
+  - name: Andy Crouch (website)
+    url: https://andy-crouch.com/feed
+    tags: [analyst, philosophy]
+
+# SAM.gov queries (used by brief.py)
 sam_queries:
   - name: Counter-UAS solicitations
     keywords: ["counter-UAS", "C-UAS", "counter unmanned"]
@@ -62,7 +115,7 @@ sam_queries:
 
   - name: Autonomous systems
     keywords: ["autonomous", "unmanned"]
-    naics: ["541715", "336411"]   # R&D in physical/engineering, aircraft mfg
+    naics: ["541715", "336411"]
     posted_within_days: 7
 
   - name: OTA opportunities
