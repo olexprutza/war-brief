@@ -2,12 +2,17 @@
 War-brief: defense industry intelligence brief.
 Pulls writers (RSS) + contract opportunities (SAM.gov), synthesizes via Claude,
 writes to public/ for GitHub Pages.
+
+All dates are in America/New_York so the brief reads naturally on a US morning,
+regardless of where the GitHub runner happens to be running.
 """
 
 import os
 import re
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 from anthropic import Anthropic
@@ -20,40 +25,72 @@ load_dotenv()
 SAM_KEY = os.getenv("SAM_GOV_API_KEY")
 client = Anthropic()
 
-MODEL = "claude-sonnet-4-6"  # bumped from claude-sonnet-4-5
+MODEL = "claude-sonnet-4-6"
 
 NAICS_CODES = ["541715", "334511", "336411", "336414", "541512"]
 WATCH_COMPANIES = ["Anduril", "Palantir", "SpaceX", "Kratos", "Amazon", "Kuiper", "Starshield"]
 
 PUBLIC_DIR = Path("public")
+EASTERN = ZoneInfo("America/New_York")
+
+# SAM.gov rate-limit hygiene
+SAM_SLEEP_SECONDS = 1.5  # delay between calls
+SAM_RETRY_DELAY = 8      # wait this long on a 429 before one retry
+SAM_MAX_RETRIES = 1
+
+
+def now_eastern() -> datetime:
+    return datetime.now(EASTERN)
 
 
 def fetch_sam_opportunities():
     """Fetch contract opportunities from SAM.gov posted in the last 24 hours."""
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%m/%d/%Y")
-    today = datetime.now().strftime("%m/%d/%Y")
+    yesterday = (now_eastern() - timedelta(days=1)).strftime("%m/%d/%Y")
+    today = now_eastern().strftime("%m/%d/%Y")
 
     all_opportunities = []
 
     for code in NAICS_CODES:
-        url = "https://api.sam.gov/opportunities/v2/search"
-        params = {
-            "api_key": SAM_KEY,
-            "postedFrom": yesterday,
-            "postedTo": today,
-            "ncode": code,
-            "limit": 50,
-        }
-        response = requests.get(url, params=params)
-        if response.status_code != 200:
-            print(f"  ! SAM.gov error for NAICS {code}: {response.status_code}")
-            continue
-        data = response.json()
-        opps = data.get("opportunitiesData", [])
-        print(f"  - NAICS {code}: {len(opps)} opportunities")
+        opps = _fetch_one_naics(code, yesterday, today)
         all_opportunities.extend(opps)
+        time.sleep(SAM_SLEEP_SECONDS)
 
     return all_opportunities
+
+
+def _fetch_one_naics(code: str, posted_from: str, posted_to: str) -> list:
+    """Fetch one NAICS code from SAM.gov, with one retry on 429."""
+    url = "https://api.sam.gov/opportunities/v2/search"
+    params = {
+        "api_key": SAM_KEY,
+        "postedFrom": posted_from,
+        "postedTo": posted_to,
+        "ncode": code,
+        "limit": 50,
+    }
+
+    for attempt in range(SAM_MAX_RETRIES + 1):
+        try:
+            response = requests.get(url, params=params, timeout=20)
+        except requests.RequestException as e:
+            print(f"  ! SAM.gov network error for NAICS {code}: {e}")
+            return []
+
+        if response.status_code == 200:
+            data = response.json()
+            opps = data.get("opportunitiesData", [])
+            print(f"  - NAICS {code}: {len(opps)} opportunities")
+            return opps
+
+        if response.status_code == 429 and attempt < SAM_MAX_RETRIES:
+            print(f"  ! SAM.gov rate-limited on NAICS {code}; sleeping {SAM_RETRY_DELAY}s and retrying")
+            time.sleep(SAM_RETRY_DELAY)
+            continue
+
+        print(f"  ! SAM.gov error for NAICS {code}: {response.status_code}")
+        return []
+
+    return []
 
 
 def format_sam_for_claude(opportunities):
@@ -74,14 +111,16 @@ def format_sam_for_claude(opportunities):
 
 
 def synthesize_brief(rss_text: str, sam_text: str) -> str:
-    """Send everything to Claude with the new prompt shape."""
+    """Send everything to Claude with the prompt from prompts/synthesize_brief.md."""
     watch_list = ", ".join(WATCH_COMPANIES)
+    today_pretty = now_eastern().strftime("%A, %B %d, %Y")
 
     prompt_path = Path("prompts/synthesize_brief.md")
     base_prompt = prompt_path.read_text() if prompt_path.exists() else _fallback_prompt()
 
     prompt = f"""{base_prompt}
 
+TODAY: {today_pretty}
 WATCH LIST: {watch_list}
 
 ---
@@ -106,7 +145,6 @@ CONTRACT OPPORTUNITIES (SAM.gov, last 24 hours):
 
 
 def _fallback_prompt() -> str:
-    """If prompts/synthesize_brief.md is missing, fall back to a minimal inline prompt."""
     return (
         "You are an analyst writing a morning defense industry brief for a single reader "
         "preparing for a Business Development role at Anduril. Lead with the must-reads from "
@@ -116,8 +154,7 @@ def _fallback_prompt() -> str:
 
 
 def render_markdown_to_html(md: str) -> str:
-    """Minimal markdown-to-HTML converter. Headers, bold, italic, links, lists, paragraphs."""
-    # Escape HTML first
+    """Minimal markdown-to-HTML converter."""
     md = md.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     lines = md.split("\n")
@@ -144,7 +181,6 @@ def render_markdown_to_html(md: str) -> str:
             close_list()
             continue
 
-        # Headers
         m = re.match(r"^(#{1,6})\s+(.*)$", line)
         if m:
             close_paragraph()
@@ -154,14 +190,12 @@ def render_markdown_to_html(md: str) -> str:
             out.append(f"<h{level}>{content}</h{level}>")
             continue
 
-        # Horizontal rule
         if re.match(r"^-{3,}\s*$", line):
             close_paragraph()
             close_list()
             out.append("<hr>")
             continue
 
-        # List items
         m = re.match(r"^\s*[-*]\s+(.*)$", line)
         if m:
             close_paragraph()
@@ -171,7 +205,6 @@ def render_markdown_to_html(md: str) -> str:
             out.append(f"<li>{_inline_md(m.group(1))}</li>")
             continue
 
-        # Paragraph
         close_list()
         if not in_paragraph:
             out.append("<p>")
@@ -185,34 +218,28 @@ def render_markdown_to_html(md: str) -> str:
 
 def _inline_md(text: str) -> str:
     """Inline markdown: bold, italic, links, inline code."""
-    # Links: [text](url)
     text = re.sub(
         r"\[([^\]]+)\]\(([^)]+)\)",
         r'<a href="\2" target="_blank" rel="noopener noreferrer">\1</a>',
         text,
     )
-    # Bold: **text**
     text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
-    # Italic: *text*
     text = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", text)
-    # Inline code
     text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
     return text
 
 
 def write_outputs(brief_markdown: str):
-    """Write the brief as dated markdown, current index.html, and update archive.html."""
+    """Write dated markdown, dated HTML, index.html, and refresh archive.html."""
     PUBLIC_DIR.mkdir(exist_ok=True)
 
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    pretty_date = datetime.now().strftime("%A, %B %d, %Y")
+    today_str = now_eastern().strftime("%Y-%m-%d")
+    pretty_date = now_eastern().strftime("%A, %B %d, %Y")
 
-    # Dated markdown archive
     md_path = PUBLIC_DIR / f"{today_str}.md"
     md_path.write_text(brief_markdown, encoding="utf-8")
     print(f"Wrote {md_path}")
 
-    # Dated HTML
     body_html = render_markdown_to_html(brief_markdown)
     page_html = _wrap_html(body_html, pretty_date, today_str)
 
@@ -220,15 +247,11 @@ def write_outputs(brief_markdown: str):
     dated_html_path.write_text(page_html, encoding="utf-8")
     print(f"Wrote {dated_html_path}")
 
-    # Latest brief lives at index.html
     index_path = PUBLIC_DIR / "index.html"
     index_path.write_text(page_html, encoding="utf-8")
     print(f"Wrote {index_path}")
 
-    # Archive page lists all dated briefs
     _write_archive()
-
-    # Make sure static files (style.css, sources.html) get copied into public/.
     _ensure_static_files()
 
 
@@ -246,7 +269,7 @@ def _wrap_html(body_html: str, pretty_date: str, iso_date: str) -> str:
   <div class="masthead-inner">
     <a href="index.html" class="brand">war-brief</a>
     <time datetime="{iso_date}" class="date">{pretty_date}</time>
-    <nav>
+  <nav>
     <a href="archive.html">archive</a>
     <a href="sources.html">sources</a>
   </nav>
@@ -264,7 +287,7 @@ def _wrap_html(body_html: str, pretty_date: str, iso_date: str) -> str:
 
 
 def _write_archive():
-    """Build archive.html from every *.md in public/."""
+    """Build archive.html from every dated *.md in public/."""
     dated_files = sorted(
         [p for p in PUBLIC_DIR.glob("*.md") if re.match(r"\d{4}-\d{2}-\d{2}\.md", p.name)],
         reverse=True,
@@ -296,7 +319,7 @@ def _write_archive():
   <div class="masthead-inner">
     <a href="index.html" class="brand">war-brief</a>
     <span class="date">archive</span>
-    <nav>
+  <nav>
     <a href="index.html">latest</a>
     <a href="sources.html">sources</a>
   </nav>
@@ -331,7 +354,7 @@ def _ensure_static_files():
 
 
 def main():
-    print(f"\n=== war-brief · {datetime.now().strftime('%A, %B %d, %Y')} ===\n")
+    print(f"\n=== war-brief · {now_eastern().strftime('%A, %B %d, %Y')} (Eastern) ===\n")
 
     print("Fetching RSS feeds...")
     rss_items = fetch_rss_items()

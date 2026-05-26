@@ -1,35 +1,42 @@
 """
 RSS fetcher for war-brief.
 Reads docs/sources.yaml, pulls every feed, filters by recency and (optionally) author.
+
+We fetch with `requests` directly so we control the HTTP headers, then hand the raw
+bytes to feedparser. This is more reliable than letting feedparser do its own HTTP,
+which tends to lose headers along the way and get blocked by Substack-style hosts.
 """
 
 from __future__ import annotations
 
-import socket
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import feedparser
+import requests
 import yaml
 
 SOURCES_PATH = Path("docs/sources.yaml")
 
-# Some publishers (Substack especially) block requests that don't look like a browser.
-# Setting these gets us back into Substack, Medium, and a few other strict hosts.
-BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 "
-    "(KHTML, like Gecko) Version/17.5 Safari/605.1.15"
-)
-REQUEST_HEADERS = {
-    "User-Agent": BROWSER_USER_AGENT,
-    "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
+# Browser-shaped headers. Substack, Medium, and several CDN-fronted sites
+# reject server-flavored requests; this gets us through most of them.
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.5 Safari/605.1.15"
+    ),
+    "Accept": (
+        "application/rss+xml, application/atom+xml, application/xml;q=0.9, "
+        "text/xml;q=0.8, text/html;q=0.7, */*;q=0.5"
+    ),
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
 }
 
-# Don't let a single slow feed hang the whole run.
-FEED_TIMEOUT_SECONDS = 15
+REQUEST_TIMEOUT_SECONDS = 15
 
 
 def load_sources() -> dict[str, Any]:
@@ -47,15 +54,34 @@ def entry_datetime(entry: Any) -> datetime | None:
 
 
 def entry_matches_author(entry: Any, author_filter: list[str]) -> bool:
-    """Check if entry's author matches any name in the filter (substring match, case-insensitive)."""
+    """Substring match, case-insensitive, against entry.author or entry.authors[]."""
     if not author_filter:
         return True
     author_text = (getattr(entry, "author", "") or "").lower()
     if not author_text:
-        # Some feeds put author info in dc:creator or authors[]
         authors = getattr(entry, "authors", []) or []
         author_text = " ".join(a.get("name", "") for a in authors).lower()
     return any(name.lower() in author_text for name in author_filter)
+
+
+def fetch_feed_bytes(url: str) -> bytes | None:
+    """Fetch a URL with browser headers. Returns response bytes or None on failure."""
+    try:
+        response = requests.get(
+            url,
+            headers=BROWSER_HEADERS,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            allow_redirects=True,
+        )
+    except requests.RequestException as e:
+        print(f"    ! HTTP error: {e}")
+        return None
+
+    if response.status_code != 200:
+        print(f"    ! HTTP {response.status_code}")
+        return None
+
+    return response.content
 
 
 def fetch_rss_items() -> list[dict[str, Any]]:
@@ -74,17 +100,12 @@ def fetch_rss_items() -> list[dict[str, Any]]:
 
         print(f"  - {name}: fetching {url}")
 
-        # Temporarily lower the socket timeout so a dead host can't hang us.
-        previous_timeout = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(FEED_TIMEOUT_SECONDS)
-        try:
-            parsed = feedparser.parse(url, request_headers=REQUEST_HEADERS)
-        except Exception as e:
-            print(f"    ! fetch failed: {e}")
-            socket.setdefaulttimeout(previous_timeout)
+        raw = fetch_feed_bytes(url)
+        if raw is None:
+            per_feed_counts.append((name, 0))
             continue
-        finally:
-            socket.setdefaulttimeout(previous_timeout)
+
+        parsed = feedparser.parse(raw)
 
         if parsed.bozo:
             err = getattr(parsed, "bozo_exception", "unknown error")
@@ -103,7 +124,6 @@ def fetch_rss_items() -> list[dict[str, Any]]:
                 or getattr(entry, "description", "")
                 or ""
             )
-            # Strip HTML tags crudely. Good enough for synthesis input.
             summary = _strip_html(summary)[:600]
 
             items.append(
@@ -122,10 +142,8 @@ def fetch_rss_items() -> list[dict[str, Any]]:
         print(f"    kept {kept} item(s)")
         per_feed_counts.append((name, kept))
 
-    # Most recent first
     items.sort(key=lambda x: x["published"], reverse=True)
 
-    # Summary so you can scan feed health at a glance
     print("\n  Feed summary (sorted by yield):")
     for name, kept in sorted(per_feed_counts, key=lambda x: -x[1]):
         marker = " " if kept > 0 else "!"
@@ -135,7 +153,7 @@ def fetch_rss_items() -> list[dict[str, Any]]:
 
 
 def _strip_html(text: str) -> str:
-    """Crude tag stripper. Avoids adding a dependency on BeautifulSoup."""
+    """Crude tag stripper. Avoids adding a BeautifulSoup dependency."""
     import re
 
     text = re.sub(r"<[^>]+>", " ", text)
