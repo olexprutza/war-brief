@@ -1,0 +1,70 @@
+# war-brief sources
+# Edit this file to add or remove sources. No code change needed.
+
+rss_feeds:
+  # Primes and key contractors
+  - name: Anduril
+    url: https://www.anduril.com/feed/
+    tags: [company, prime]
+
+  - name: Palantir
+    url: https://blog.palantir.com/feed
+    tags: [company, prime]
+
+  - name: SpaceX
+    url: https://www.spacex.com/updates/rss.xml
+    tags: [company, launch]
+
+  - name: Kratos
+    url: https://www.kratosdefense.com/feed
+    tags: [company, prime]
+
+  - name: Amazon Kuiper
+    url: https://www.aboutamazon.com/news/tag/project-kuiper.rss
+    tags: [company, space]
+
+  # Trade press
+  - name: Breaking Defense
+    url: https://breakingdefense.com/feed/
+    tags: [press]
+
+  - name: Defense News
+    url: https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml
+    tags: [press]
+
+  - name: War on the Rocks
+    url: https://warontherocks.com/feed/
+    tags: [press, analysis]
+
+  # Analysts and writers (verify URLs; some may need updating)
+  - name: Acquisition Talk (Eric Lofgren)
+    url: https://acquisitiontalk.com/feed/
+    tags: [analyst, acquisition-reform]
+
+  # Site-wide feed; filter by author in fetch_rss.py
+  - name: AEI (filtered)
+    url: https://www.aei.org/rss
+    tags: [analyst, think-tank]
+    author_filter:
+      - Ross Douthat
+      - Hal Brands
+      - Kori Schake
+      - Mackenzie Eaglen
+      - Bill Greenwalt
+
+# SAM.gov queries
+# Each entry becomes a separate API call. NAICS = North American Industry
+# Classification System. PSC = Product or Service Code.
+sam_queries:
+  - name: Counter-UAS solicitations
+    keywords: ["counter-UAS", "C-UAS", "counter unmanned"]
+    posted_within_days: 7
+
+  - name: Autonomous systems
+    keywords: ["autonomous", "unmanned"]
+    naics: ["541715", "336411"]   # R&D in physical/engineering, aircraft mfg
+    posted_within_days: 7
+
+  - name: OTA opportunities
+    keywords: ["other transaction", "OTA"]
+    posted_within_days: 14
