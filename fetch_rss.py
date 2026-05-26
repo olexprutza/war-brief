@@ -5,6 +5,7 @@ Reads docs/sources.yaml, pulls every feed, filters by recency and (optionally) a
 
 from __future__ import annotations
 
+import socket
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,6 +15,21 @@ import feedparser
 import yaml
 
 SOURCES_PATH = Path("docs/sources.yaml")
+
+# Some publishers (Substack especially) block requests that don't look like a browser.
+# Setting these gets us back into Substack, Medium, and a few other strict hosts.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.5 Safari/605.1.15"
+)
+REQUEST_HEADERS = {
+    "User-Agent": BROWSER_USER_AGENT,
+    "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+# Don't let a single slow feed hang the whole run.
+FEED_TIMEOUT_SECONDS = 15
 
 
 def load_sources() -> dict[str, Any]:
@@ -49,6 +65,7 @@ def fetch_rss_items() -> list[dict[str, Any]]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
 
     items: list[dict[str, Any]] = []
+    per_feed_counts: list[tuple[str, int]] = []
 
     for feed in sources.get("rss_feeds", []):
         name = feed["name"]
@@ -56,7 +73,18 @@ def fetch_rss_items() -> list[dict[str, Any]]:
         author_filter = feed.get("author_filter", [])
 
         print(f"  - {name}: fetching {url}")
-        parsed = feedparser.parse(url)
+
+        # Temporarily lower the socket timeout so a dead host can't hang us.
+        previous_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(FEED_TIMEOUT_SECONDS)
+        try:
+            parsed = feedparser.parse(url, request_headers=REQUEST_HEADERS)
+        except Exception as e:
+            print(f"    ! fetch failed: {e}")
+            socket.setdefaulttimeout(previous_timeout)
+            continue
+        finally:
+            socket.setdefaulttimeout(previous_timeout)
 
         if parsed.bozo:
             err = getattr(parsed, "bozo_exception", "unknown error")
@@ -92,9 +120,17 @@ def fetch_rss_items() -> list[dict[str, Any]]:
             kept += 1
 
         print(f"    kept {kept} item(s)")
+        per_feed_counts.append((name, kept))
 
     # Most recent first
     items.sort(key=lambda x: x["published"], reverse=True)
+
+    # Summary so you can scan feed health at a glance
+    print("\n  Feed summary (sorted by yield):")
+    for name, kept in sorted(per_feed_counts, key=lambda x: -x[1]):
+        marker = " " if kept > 0 else "!"
+        print(f"    [{marker}] {kept:>3}  {name}")
+
     return items
 
 
