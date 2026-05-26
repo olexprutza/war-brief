@@ -2,13 +2,19 @@ name: war-brief
 
 on:
   schedule:
-    # 06:00 ET on Monday, Wednesday, Friday. Cron is UTC.
-    # 10:30 UTC is 06:30 EDT / 05:30 EST. Adjust if you care about DST drift.
+    # Monday, Wednesday, Friday at 10:30 UTC. That is 06:30 EDT in summer / 05:30 EST in winter.
     - cron: '30 10 * * 1,3,5'
-  workflow_dispatch:   # lets you run manually from the Actions tab
+  workflow_dispatch:
 
 permissions:
   contents: write       # to commit the generated brief back to the repo
+  pages: write          # to deploy to GitHub Pages
+  id-token: write       # required by the Pages deploy action
+
+# Avoid two runs trying to deploy at the same time.
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   build-and-deploy:
@@ -29,23 +35,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Fetch SAM.gov opportunities
-        env:
-          SAM_API_KEY: ${{ secrets.SAM_API_KEY }}
-        run: python -m src.fetch_sam
-
-      - name: Fetch RSS feeds
-        run: python -m src.fetch_rss
-
-      - name: Synthesize brief
+      - name: Build the brief
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python -m src.synthesize
+          SAM_GOV_API_KEY: ${{ secrets.SAM_GOV_API_KEY }}
+        run: python brief.py
 
-      - name: Render static site
-        run: python -m src.render
-
-      - name: Commit and push generated brief
+      - name: Commit dated archive
         run: |
           git config user.name "war-brief bot"
           git config user.email "actions@github.com"
@@ -53,5 +49,10 @@ jobs:
           git diff --staged --quiet || git commit -m "brief: $(date -u +%Y-%m-%d)"
           git push
 
-  # Optional: separate deploy step if using GitHub Pages from /public
-  # See https://docs.github.com/en/pages for the cleaner Pages action approach.
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
